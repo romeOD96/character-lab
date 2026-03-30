@@ -1,29 +1,21 @@
-from __future__ import annotations
-
-from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Any
+from dataclasses import dataclass
 
 
 @dataclass
 class NarrativeContext:
     """
     Represents the narrative or scenario in which characters are generated.
-    This ensures characters are created within a story context rather than in isolation.
     """
-    title: str                 # Short name for the narrative or scenario
-    genre: str                 # Genre used to guide tone and style of generation
-    setting: str               # Where the story takes place
-    theme: Optional[str] = None
-    high_level_plot: Optional[str] = None
-    constraints: List[str] = field(default_factory=list)  # Rules the AI must respect
+    def __init__(self, title, genre, setting, theme=None, high_level_plot=None, constraints=None):
+        self.title = title
+        self.genre = genre
+        self.setting = setting
+        self.theme = theme
+        self.high_level_plot = high_level_plot
+        self.constraints = constraints if constraints is not None else []
 
-    def validate(self) -> List[str]:
-        """
-        Performs basic validation to ensure required narrative fields are present.
-        Returns a list of error messages rather than raising exceptions,
-        allowing multiple issues to be reported at once.
-        """
-        errors: List[str] = []
+    def validate(self):
+        errors = []
 
         if not self.title.strip():
             errors.append("NarrativeContext.title is required.")
@@ -39,34 +31,30 @@ class NarrativeContext:
 class CharacterProfile:
     """
     Structured definition of a character.
-    This data is used to guide AI generation and later evaluate consistency.
     """
-    name: str                          # Character name
-    role_in_story: str                # Narrative role (e.g. protagonist, antagonist)
-    background: Optional[str] = None  # Optional backstory or history
+    def __init__(self, name, role_in_story, background=None,
+                 personality_traits=None, motivations=None,
+                 fears=None, relationships=None, voice_notes=None):
 
-    # Explicit traits allow for controllable generation and evaluation
-    personality_traits: List[str] = field(default_factory=list)
-    motivations: List[str] = field(default_factory=list)
-    fears: List[str] = field(default_factory=list)
+        self.name = name
+        self.role_in_story = role_in_story
+        self.background = background
 
-    # Maps other character names to relationship descriptions
-    relationships: Dict[str, str] = field(default_factory=dict)
-    voice_notes: Optional[str] = None  # Notes on tone or speech style
+        self.personality_traits = personality_traits if personality_traits is not None else []
+        self.motivations = motivations if motivations is not None else []
+        self.fears = fears if fears is not None else []
+        self.relationships = relationships if relationships is not None else {}
 
-    def validate(self) -> List[str]:
-        """
-        Validates that the character definition contains enough structure
-        to support meaningful and consistent generation.
-        """
-        errors: List[str] = []
+        self.voice_notes = voice_notes
+
+    def validate(self):
+        errors = []
 
         if not self.name.strip():
             errors.append("CharacterProfile.name is required.")
         if not self.role_in_story.strip():
             errors.append("CharacterProfile.role_in_story is required.")
 
-        # Require at least minimal structure, but remain flexible for creativity
         if len(self.personality_traits) == 0:
             errors.append("CharacterProfile.personality_traits should include at least one trait.")
         if len(self.motivations) == 0:
@@ -75,33 +63,27 @@ class CharacterProfile:
         return errors
 
 
-@dataclass
 class GenerationRequest:
     """
-    Combines narrative context, character definition, and generation settings
-    into a single request passed through the generation pipeline.
+    Combines narrative context, character definition, and generation settings.
     """
-    narrative: NarrativeContext
-    character: CharacterProfile
-    output_type: str          # Determines what is generated: profile, dialogue, or scene
-    n_variations: int = 1     # Number of alternative generations to produce
+    def __init__(self, narrative, character, output_type, n_variations=1):
+        self.narrative = narrative
+        self.character = character
+        self.output_type = output_type
+        self.n_variations = n_variations
 
-    def validate(self) -> List[str]:
-        """
-        Validates the full generation request, including nested components.
-        This ensures errors are caught early before prompt construction or generation.
-        """
+    def validate(self):
         errors = []
 
         errors.extend(self.narrative.validate())
         errors.extend(self.character.validate())
 
-        if self.output_type not in {"profile", "dialogue", "scene"}:
+        if self.output_type not in ["profile", "dialogue", "scene"]:
             errors.append(
                 "GenerationRequest.output_type must be one of: profile, dialogue, scene."
             )
 
-        # Limit variations to keep generation manageable and comparable
         if self.n_variations < 1 or self.n_variations > 5:
             errors.append(
                 "GenerationRequest.n_variations must be between 1 and 5."
@@ -110,11 +92,7 @@ class GenerationRequest:
         return errors
 
 
-def to_compact_dict(req: GenerationRequest) -> Dict[str, Any]:
-    """
-    Converts a GenerationRequest into a plain dictionary.
-    Useful for debugging, logging, exporting, or serialisation (e.g. JSON).
-    """
+def to_compact_dict(req):
     return {
         "narrative": {
             "title": req.narrative.title,
