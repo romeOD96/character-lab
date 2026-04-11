@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useRef } from "react";
 import "./app.css";
 
 const API_BASE = "http://127.0.0.1:8000";
@@ -11,34 +11,56 @@ function JsonPretty({ value }) {
     return <pre className="code">{JSON.stringify(value, null, 2)}</pre>;
 }
 
-function Field({ label, tooltip, children }) {
+function Field({ label, tooltip, children, style }) {
     return (
-        <label className="fieldWrap">
+        <label className="fieldWrap" style={style}>
       <span className="fieldLabel">
         {label}
-          <span className="tooltip">{tooltip}</span>
+          {tooltip && <span className="tooltip">{tooltip}</span>}
       </span>
             {children}
         </label>
     );
 }
 
-export default function App() {
-    const [presets] = useState([
-        { id: "p1", name: "Iris Vale", role: "Protagonist" },
-        { id: "p2", name: "Lucan Mercer", role: "Antagonist" },
-        { id: "p3", name: "Mara Quinn", role: "Mentor" },
-    ]);
-    const [selectedPreset, setSelectedPreset] = useState(null);
+// Generates a stable position for a location node on the map canvas
+function getNodePosition(index, total) {
+    if (total === 1) return { x: 50, y: 50 };
+    const angle = (index / total) * 2 * Math.PI - Math.PI / 2;
+    const rx = 36, ry = 32;
+    return {
+        x: 50 + rx * Math.cos(angle),
+        y: 50 + ry * Math.sin(angle),
+    };
+}
 
-    // Narrative inputs — empty by default
+export default function App() {
+    // ── Sidebar characters ──
+    const [characters, setCharacters] = useState([
+        { id: "c1", name: "Iris Vale", role: "Protagonist", locationId: null },
+        { id: "c2", name: "Lucan Mercer", role: "Antagonist", locationId: null },
+        { id: "c3", name: "Mara Quinn", role: "Mentor", locationId: null },
+    ]);
+    const [selectedChar, setSelectedChar] = useState(null);
+
+    // ── Map / locations ──
+    const [locations, setLocations] = useState([]);
+    const [activeLocationId, setActiveLocationId] = useState(null);
+    const [newLocName, setNewLocName] = useState("");
+    const [newLocDesc, setNewLocDesc] = useState("");
+    const [showAddLoc, setShowAddLoc] = useState(false);
+    const [dragging, setDragging] = useState(null); // { id, startX, startY }
+    const [positions, setPositions] = useState({}); // { locId: {x, y} }
+    const mapRef = useRef(null);
+
+    // ── Scenario inputs ──
     const [title, setTitle] = useState("");
     const [genre, setGenre] = useState("");
     const [setting, setSetting] = useState("");
     const [theme, setTheme] = useState("");
     const [constraintsText, setConstraintsText] = useState("");
 
-    // Character inputs — empty by default
+    // ── Character inputs ──
     const [charName, setCharName] = useState("");
     const [roleInStory, setRoleInStory] = useState("");
     const [background, setBackground] = useState("");
@@ -47,43 +69,85 @@ export default function App() {
     const [fearsText, setFearsText] = useState("");
     const [nVariations, setNVariations] = useState(1);
 
-    const [messages, setMessages] = useState([
-        {
-            id: "m1",
-            role: "system",
-            text: "Narrative-first character generator. Define a scenario and character on the right, then click Generate.",
-        },
-    ]);
-    const [input, setInput] = useState("");
+    // ── Output ──
     const [activeTab, setActiveTab] = useState("profile");
     const [latest, setLatest] = useState(null);
+    const [generating, setGenerating] = useState(false);
+    const [statusMsg, setStatusMsg] = useState("");
 
     const constraints = useMemo(() => linesToArray(constraintsText), [constraintsText]);
     const personality_traits = useMemo(() => linesToArray(traitsText), [traitsText]);
     const motivations = useMemo(() => linesToArray(motivationsText), [motivationsText]);
     const fears = useMemo(() => linesToArray(fearsText), [fearsText]);
 
-    function applyPreset(id) {
-        setSelectedPreset(id);
-        const p = presets.find((x) => x.id === id);
-        if (!p) return;
-        setCharName(p.name);
-        setRoleInStory(p.role);
+    const activeLocation = locations.find((l) => l.id === activeLocationId) || null;
+
+    // ── Load character into form ──
+    function selectChar(c) {
+        setSelectedChar(c.id);
+        setCharName(c.name);
+        setRoleInStory(c.role);
     }
 
-    async function generate() {
-        setMessages((prev) => [
-            ...prev,
-            {
-                id: crypto.randomUUID(),
-                role: "user",
-                text: input.trim() || `Generate outputs for ${charName || "character"} (${roleInStory || "role"}) inside "${title || "untitled"}" (${genre || "no genre"}).`,
-            },
-        ]);
-        setInput("");
+    // ── Map: add location ──
+    function addLocation() {
+        if (!newLocName.trim()) return;
+        const id = crypto.randomUUID();
+        const newLoc = { id, name: newLocName.trim(), description: newLocDesc.trim(), tags: [] };
+        const updated = [...locations, newLoc];
+        setLocations(updated);
+        // Auto-position in a circle
+        const idx = updated.length - 1;
+        const pos = getNodePosition(idx, updated.length);
+        setPositions((prev) => ({ ...prev, [id]: pos }));
+        setNewLocName("");
+        setNewLocDesc("");
+        setShowAddLoc(false);
+    }
 
-        const typingId = crypto.randomUUID();
-        setMessages((prev) => [...prev, { id: typingId, role: "assistant", text: "Generating…" }]);
+    function removeLocation(id) {
+        setLocations((prev) => prev.filter((l) => l.id !== id));
+        if (activeLocationId === id) setActiveLocationId(null);
+        setPositions((prev) => { const n = { ...prev }; delete n[id]; return n; });
+        setCharacters((prev) => prev.map((c) => c.locationId === id ? { ...c, locationId: null } : c));
+    }
+
+    function assignCharToLocation(charId, locId) {
+        setCharacters((prev) => prev.map((c) => c.id === charId ? { ...c, locationId: locId } : c));
+    }
+
+    // ── Map drag ──
+    function onMouseDown(e, locId) {
+        e.preventDefault();
+        setDragging(locId);
+    }
+
+    function onMouseMove(e) {
+        if (!dragging || !mapRef.current) return;
+        const rect = mapRef.current.getBoundingClientRect();
+        const x = ((e.clientX - rect.left) / rect.width) * 100;
+        const y = ((e.clientY - rect.top) / rect.height) * 100;
+        setPositions((prev) => ({ ...prev, [dragging]: { x: Math.max(5, Math.min(95, x)), y: Math.max(5, Math.min(95, y)) } }));
+    }
+
+    function onMouseUp() { setDragging(null); }
+
+    // ── Generate ──
+    async function generate() {
+        setGenerating(true);
+        setStatusMsg("Generating…");
+        setLatest(null);
+
+        // Build location context to inject into the prompt
+        const locationContext = activeLocation
+            ? `\nActive Location: ${activeLocation.name}${activeLocation.description ? ` — ${activeLocation.description}` : ""}`
+            : "";
+
+        // Characters at the active location
+        const charsAtLocation = characters.filter((c) => c.locationId === activeLocationId);
+        const charContext = charsAtLocation.length > 0
+            ? `\nOther characters present: ${charsAtLocation.map((c) => `${c.name} (${c.role})`).join(", ")}`
+            : "";
 
         try {
             const res = await fetch(`${API_BASE}/generate`, {
@@ -91,7 +155,14 @@ export default function App() {
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     n_variations: Number(nVariations),
-                    narrative: { title, genre, setting, theme, high_level_plot: null, constraints },
+                    narrative: {
+                        title,
+                        genre,
+                        setting: setting + locationContext + charContext,
+                        theme,
+                        high_level_plot: null,
+                        constraints,
+                    },
                     character: {
                         name: charName,
                         role_in_story: roleInStory,
@@ -106,29 +177,24 @@ export default function App() {
             });
 
             const data = await res.json();
-
             if (!res.ok) {
-                const msg = data?.detail ? String(data.detail) : "Generation failed";
-                setMessages((prev) => prev.map((m) => (m.id === typingId ? { ...m, text: `Error: ${msg}` } : m)));
+                setStatusMsg(`Error: ${data?.detail || "Generation failed"}`);
                 return;
             }
 
             const first = (data.results || [])[0];
             setLatest(first || null);
-
-            const assistantText = first
-                ? `PROFILE:\n${first.profile}\n\nDIALOGUE:\n${first.dialogue}\n\nSCENE:\n${first.scene}`
-                : "No results returned.";
-
-            setMessages((prev) => prev.map((m) => (m.id === typingId ? { ...m, text: assistantText } : m)));
+            setStatusMsg(first ? "Generation complete." : "No results returned.");
         } catch (e) {
-            setMessages((prev) => prev.map((m) => (m.id === typingId ? { ...m, text: `Error: ${String(e)}` } : m)));
+            setStatusMsg(`Error: ${String(e)}`);
+        } finally {
+            setGenerating(false);
         }
     }
 
     return (
         <div className="app">
-            {/* Left Sidebar */}
+            {/* ── Left Sidebar ── */}
             <aside className="sidebar">
                 <div className="brand">
                     <div className="logo" />
@@ -140,65 +206,183 @@ export default function App() {
 
                 <div className="sectionTitle">Characters</div>
                 <div className="list">
-                    {presets.map((p) => (
-                        <button
-                            key={p.id}
-                            className={`item ${selectedPreset === p.id ? "active" : ""}`}
-                            onClick={() => applyPreset(p.id)}
-                            type="button"
-                        >
-                            <div className="itemName">{p.name}</div>
-                            <div className="itemMeta">{p.role}</div>
-                        </button>
-                    ))}
+                    {characters.map((c) => {
+                        const loc = locations.find((l) => l.id === c.locationId);
+                        return (
+                            <button
+                                key={c.id}
+                                className={`item ${selectedChar === c.id ? "active" : ""}`}
+                                onClick={() => selectChar(c)}
+                                type="button"
+                            >
+                                <div className="itemName">{c.name}</div>
+                                <div className="itemMeta">{c.role}</div>
+                                {loc && <div className="itemLoc">📍 {loc.name}</div>}
+                            </button>
+                        );
+                    })}
                 </div>
 
+                {/* Assign selected character to location */}
+                {selectedChar && locations.length > 0 && (
+                    <div className="assignBox">
+                        <div className="sectionTitle" style={{ marginTop: 0 }}>Assign to location</div>
+                        <select
+                            className="selectInput"
+                            value={characters.find((c) => c.id === selectedChar)?.locationId || ""}
+                            onChange={(e) => assignCharToLocation(selectedChar, e.target.value || null)}
+                        >
+                            <option value="">— None —</option>
+                            {locations.map((l) => (
+                                <option key={l.id} value={l.id}>{l.name}</option>
+                            ))}
+                        </select>
+                    </div>
+                )}
+
                 <div className="hint">
-                    Select a character template to pre-fill the form, or define your own from scratch on the right.
+                    Click a character to load them into the form. Assign them to a map location to ground generation in place.
                 </div>
             </aside>
 
-            {/* Main Chat */}
+            {/* ── Centre: Map + Output ── */}
             <main className="main">
-                <header className="topbar">
-                    <div className="topbarLeft">
-                        <div className="pill">API: {API_BASE}</div>
-                        <div className="pill">Endpoint: /generate</div>
-                    </div>
-                    <div className="topbarRight">
-                        <button className="btn ghost" type="button" onClick={() => setMessages(messages.slice(0, 1))}>
-                            Clear chat
+                {/* Map panel */}
+                <div className="mapPanel">
+                    <div className="mapHeader">
+                        <span className="mapTitle">🗺 Narrative Map — {title || "Untitled Scenario"}</span>
+                        <button className="btn ghost small" type="button" onClick={() => setShowAddLoc((v) => !v)}>
+                            + Add Location
                         </button>
                     </div>
-                </header>
 
-                <section className="chat">
-                    {messages.map((m) => (
-                        <div key={m.id} className={`msg ${m.role}`}>
-                            <div className="bubble">
-                                <div className="role">{m.role}</div>
-                                <div className="text" style={{ whiteSpace: "pre-wrap" }}>{m.text}</div>
-                            </div>
+                    {showAddLoc && (
+                        <div className="addLocForm">
+                            <input
+                                className="input small"
+                                placeholder="Location name…"
+                                value={newLocName}
+                                onChange={(e) => setNewLocName(e.target.value)}
+                            />
+                            <input
+                                className="input small"
+                                placeholder="Short description (optional)…"
+                                value={newLocDesc}
+                                onChange={(e) => setNewLocDesc(e.target.value)}
+                            />
+                            <button className="btn small" type="button" onClick={addLocation}>Add</button>
+                            <button className="btn ghost small" type="button" onClick={() => setShowAddLoc(false)}>Cancel</button>
                         </div>
-                    ))}
-                </section>
+                    )}
 
-                <footer className="composer">
-                    <input
-                        className="input"
-                        placeholder="Leave blank and click Generate, or type a note first…"
-                        value={input}
-                        onChange={(e) => setInput(e.target.value)}
-                        onKeyDown={(e) => { if (e.key === "Enter") generate(); }}
-                    />
-                    <button className="btn" type="button" onClick={generate}>Generate</button>
-                </footer>
+                    {/* Map canvas */}
+                    <div
+                        className="mapCanvas"
+                        ref={mapRef}
+                        onMouseMove={onMouseMove}
+                        onMouseUp={onMouseUp}
+                        onMouseLeave={onMouseUp}
+                    >
+                        {locations.length === 0 && (
+                            <div className="mapEmpty">Add locations to build your narrative world map.</div>
+                        )}
+
+                        {/* Draw connection lines between locations */}
+                        <svg className="mapSvg">
+                            {locations.map((loc, i) =>
+                                locations.slice(i + 1).map((loc2) => {
+                                    const p1 = positions[loc.id] || getNodePosition(i, locations.length);
+                                    const p2 = positions[loc2.id] || getNodePosition(i + 1, locations.length);
+                                    return (
+                                        <line
+                                            key={`${loc.id}-${loc2.id}`}
+                                            x1={`${p1.x}%`} y1={`${p1.y}%`}
+                                            x2={`${p2.x}%`} y2={`${p2.y}%`}
+                                            stroke="rgba(124,92,255,0.15)"
+                                            strokeWidth="1"
+                                            strokeDasharray="4 4"
+                                        />
+                                    );
+                                })
+                            )}
+                        </svg>
+
+                        {locations.map((loc, i) => {
+                            const pos = positions[loc.id] || getNodePosition(i, locations.length);
+                            const isActive = loc.id === activeLocationId;
+                            const charsHere = characters.filter((c) => c.locationId === loc.id);
+
+                            return (
+                                <div
+                                    key={loc.id}
+                                    className={`mapNode ${isActive ? "active" : ""}`}
+                                    style={{ left: `${pos.x}%`, top: `${pos.y}%` }}
+                                    onMouseDown={(e) => onMouseDown(e, loc.id)}
+                                    onClick={() => setActiveLocationId(isActive ? null : loc.id)}
+                                >
+                                    <div className="nodeDot" />
+                                    <div className="nodeLabel">{loc.name}</div>
+                                    {charsHere.length > 0 && (
+                                        <div className="nodeChars">
+                                            {charsHere.map((c) => (
+                                                <span key={c.id} className="charTag">{c.name.split(" ")[0]}</span>
+                                            ))}
+                                        </div>
+                                    )}
+                                    <button
+                                        className="nodeRemove"
+                                        type="button"
+                                        onClick={(e) => { e.stopPropagation(); removeLocation(loc.id); }}
+                                    >×</button>
+                                </div>
+                            );
+                        })}
+                    </div>
+
+                    {activeLocation && (
+                        <div className="activeLocBar">
+                            <span>📍 Active location: <strong>{activeLocation.name}</strong></span>
+                            {activeLocation.description && <span className="muted"> — {activeLocation.description}</span>}
+                            <span className="muted" style={{ marginLeft: "auto", fontSize: 11 }}>This location will be injected into generation</span>
+                        </div>
+                    )}
+                </div>
+
+                {/* Output panel */}
+                <div className="outputPanel">
+                    <div className="outputHeader">
+                        <div className="tabs">
+                            {["profile", "dialogue", "scene", "consistency"].map((t) => (
+                                <button
+                                    key={t}
+                                    type="button"
+                                    className={`tab ${activeTab === t ? "active" : ""}`}
+                                    onClick={() => setActiveTab(t)}
+                                >
+                                    {t}
+                                </button>
+                            ))}
+                        </div>
+                        <button className="btn" type="button" onClick={generate} disabled={generating}>
+                            {generating ? "Generating…" : "Generate"}
+                        </button>
+                    </div>
+
+                    {statusMsg && <div className="statusMsg">{statusMsg}</div>}
+
+                    <div className="output">
+                        {!latest && <div className="muted">Fill in the scenario and character on the right, then click Generate.</div>}
+                        {latest && activeTab === "profile" && <div className="outText">{latest.profile}</div>}
+                        {latest && activeTab === "dialogue" && <div className="outText">{latest.dialogue}</div>}
+                        {latest && activeTab === "scene" && <div className="outText">{latest.scene}</div>}
+                        {latest && activeTab === "consistency" && <JsonPretty value={latest.consistency_report} />}
+                    </div>
+                </div>
             </main>
 
-            {/* Right Panel */}
+            {/* ── Right Panel: Scenario + Character form ── */}
             <aside className="panel">
                 <div className="panelTitle">Scenario</div>
-
                 <div className="form">
                     <div className="grid2">
                         <Field label="Title" tooltip="The main title of your story or narrative world.">
@@ -209,15 +393,15 @@ export default function App() {
                         </Field>
                     </div>
 
-                    <Field label="Setting" tooltip="Where and when the story takes place. Be specific — it grounds the AI output.">
+                    <Field label="Setting" tooltip="Where and when the story takes place. Be specific.">
                         <input value={setting} onChange={(e) => setSetting(e.target.value)} placeholder="e.g. A city where memories can be bought and sold" />
                     </Field>
 
-                    <Field label="Theme (optional)" tooltip="The central idea or question your story explores — e.g. identity, power, sacrifice.">
+                    <Field label="Theme (optional)" tooltip="The central idea your story explores — e.g. identity, sacrifice.">
                         <input value={theme} onChange={(e) => setTheme(e.target.value)} placeholder="e.g. Identity and sacrifice" />
                     </Field>
 
-                    <Field label="Constraints (one per line)" tooltip="Rules of your world that the AI must not break — e.g. 'Magic has a cost'. One per line.">
+                    <Field label="Constraints (one per line)" tooltip="Rules of your world the AI must not break. One per line.">
                         <textarea rows={3} value={constraintsText} onChange={(e) => setConstraintsText(e.target.value)} placeholder={"Magic has a cost\nMemories cannot be fully restored"} />
                     </Field>
 
@@ -225,52 +409,34 @@ export default function App() {
                     <div className="panelTitle" style={{ marginTop: 0 }}>Character</div>
 
                     <div className="grid2">
-                        <Field label="Name" tooltip="Your character's name. This will appear throughout all generated outputs.">
+                        <Field label="Name" tooltip="Your character's name.">
                             <input value={charName} onChange={(e) => setCharName(e.target.value)} placeholder="e.g. Iris Vale" />
                         </Field>
-                        <Field label="Role" tooltip="Their narrative role — e.g. Protagonist, Antagonist, Mentor, Sidekick.">
+                        <Field label="Role" tooltip="Their narrative role — Protagonist, Antagonist, Mentor, etc.">
                             <input value={roleInStory} onChange={(e) => setRoleInStory(e.target.value)} placeholder="e.g. Protagonist" />
                         </Field>
                     </div>
 
-                    <Field label="Background (optional)" tooltip="A brief history — their past, what shaped them, and where they came from.">
-                        <textarea rows={3} value={background} onChange={(e) => setBackground(e.target.value)} placeholder="e.g. A former social worker turned memory-broker after a personal tragedy." />
+                    <Field label="Background (optional)" tooltip="A brief history — their past and what shaped them.">
+                        <textarea rows={2} value={background} onChange={(e) => setBackground(e.target.value)} placeholder="e.g. A former social worker turned memory-broker." />
                     </Field>
 
                     <div className="grid2">
-                        <Field label="Traits" tooltip="Personality traits, one per line — e.g. empathetic, impulsive, secretive.">
+                        <Field label="Traits" tooltip="Personality traits, one per line.">
                             <textarea rows={3} value={traitsText} onChange={(e) => setTraitsText(e.target.value)} placeholder={"empathetic\ncautious"} />
                         </Field>
-                        <Field label="Motivations" tooltip="What drives them? What do they want or need? One per line.">
+                        <Field label="Motivations" tooltip="What drives them? One per line.">
                             <textarea rows={3} value={motivationsText} onChange={(e) => setMotivationsText(e.target.value)} placeholder={"protect her sibling\nrecover lost memories"} />
                         </Field>
                     </div>
 
-                    <Field label="Fears" tooltip="What are they afraid of, or what would break them? One per line.">
+                    <Field label="Fears" tooltip="What would break them? One per line.">
                         <textarea rows={2} value={fearsText} onChange={(e) => setFearsText(e.target.value)} placeholder="e.g. losing her identity" />
                     </Field>
 
-                    <Field label="Variations" tooltip="Generate multiple versions to compare outputs. 1–5.">
-                        <input type="number" min={1} max={5} value={nVariations} onChange={(e) => setNVariations(e.target.value)} style={{ width: 80 }} />
+                    <Field label="Variations" tooltip="Generate multiple versions to compare. 1–5.">
+                        <input type="number" min={1} max={5} value={nVariations} onChange={(e) => setNVariations(e.target.value)} style={{ width: 70 }} />
                     </Field>
-                </div>
-
-                <div className="panelTitle">Latest Output</div>
-
-                <div className="tabs">
-                    {["profile", "dialogue", "scene", "consistency"].map((t) => (
-                        <button key={t} type="button" className={`tab ${activeTab === t ? "active" : ""}`} onClick={() => setActiveTab(t)}>
-                            {t}
-                        </button>
-                    ))}
-                </div>
-
-                <div className="output">
-                    {!latest && <div className="muted">Generate to see results here.</div>}
-                    {latest && activeTab === "profile" && <div className="outText">{latest.profile}</div>}
-                    {latest && activeTab === "dialogue" && <div className="outText">{latest.dialogue}</div>}
-                    {latest && activeTab === "scene" && <div className="outText">{latest.scene}</div>}
-                    {latest && activeTab === "consistency" && <JsonPretty value={latest.consistency_report} />}
                 </div>
             </aside>
         </div>
