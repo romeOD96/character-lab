@@ -7,10 +7,6 @@ function linesToArray(s) {
     return s.split("\n").map((x) => x.trim()).filter(Boolean);
 }
 
-function JsonPretty({ value }) {
-    return <pre className="code">{JSON.stringify(value, null, 2)}</pre>;
-}
-
 function Field({ label, tooltip, children, style }) {
     return (
         <label className="fieldWrap" style={style}>
@@ -23,7 +19,53 @@ function Field({ label, tooltip, children, style }) {
     );
 }
 
-// Generates a stable position for a location node on the map canvas
+function ConsistencyCard({ report }) {
+    if (!report) return null;
+    const score = report.score_out_of_7 ?? 0;
+    const pct = Math.round((score / 7) * 100);
+    const color = pct >= 70 ? "#2dd4bf" : pct >= 40 ? "#f59e0b" : "#f87171";
+
+    const rows = [
+        { label: "Personality traits reflected", hits: report.trait_hits },
+        { label: "Motivations reflected", hits: report.motivation_hits },
+        { label: "Fears reflected", hits: report.fear_hits },
+        { label: "Constraints referenced", hits: report.constraint_hits },
+    ];
+
+    return (
+        <div className="consistencyCard">
+            <div className="consistencyScore">
+                <div className="scoreBig" style={{ color }}>{score}<span className="scoreMax">/7</span></div>
+                <div className="scoreBar">
+                    <div className="scoreBarFill" style={{ width: `${pct}%`, background: color }} />
+                </div>
+                <div className="scoreLabel" style={{ color }}>
+                    {pct >= 70 ? "Strong consistency" : pct >= 40 ? "Partial consistency" : "Low consistency"}
+                </div>
+            </div>
+
+            <div className="consistencyRows">
+                {rows.map((r) => (
+                    <div key={r.label} className="consistencyRow">
+                        <span className="cRowLabel">{r.label}</span>
+                        <span className="cRowHits" style={{ color: r.hits > 0 ? "#2dd4bf" : "#f87171" }}>
+              {r.hits > 0 ? `✓ ${r.hits} hit${r.hits > 1 ? "s" : ""}` : "✗ not found"}
+            </span>
+                    </div>
+                ))}
+            </div>
+
+            {report.notes && report.notes.length > 0 && (
+                <div className="consistencyNotes">
+                    {report.notes.map((n, i) => (
+                        <div key={i} className="consistencyNote">⚠ {n}</div>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+}
+
 function getNodePosition(index, total) {
     if (total === 1) return { x: 50, y: 50 };
     const angle = (index / total) * 2 * Math.PI - Math.PI / 2;
@@ -35,7 +77,6 @@ function getNodePosition(index, total) {
 }
 
 export default function App() {
-    // ── Sidebar characters ──
     const [characters, setCharacters] = useState([
         { id: "c1", name: "Iris Vale", role: "Protagonist", locationId: null },
         { id: "c2", name: "Lucan Mercer", role: "Antagonist", locationId: null },
@@ -43,33 +84,30 @@ export default function App() {
     ]);
     const [selectedChar, setSelectedChar] = useState(null);
 
-    // ── Map / locations ──
     const [locations, setLocations] = useState([]);
     const [activeLocationId, setActiveLocationId] = useState(null);
     const [newLocName, setNewLocName] = useState("");
     const [newLocDesc, setNewLocDesc] = useState("");
     const [showAddLoc, setShowAddLoc] = useState(false);
-    const [dragging, setDragging] = useState(null); // { id, startX, startY }
-    const [positions, setPositions] = useState({}); // { locId: {x, y} }
+    const [positions, setPositions] = useState({});
+    const [dragging, setDragging] = useState(null);
     const mapRef = useRef(null);
 
-    // ── Scenario inputs ──
     const [title, setTitle] = useState("");
     const [genre, setGenre] = useState("");
     const [setting, setSetting] = useState("");
     const [theme, setTheme] = useState("");
     const [constraintsText, setConstraintsText] = useState("");
 
-    // ── Character inputs ──
     const [charName, setCharName] = useState("");
     const [roleInStory, setRoleInStory] = useState("");
     const [background, setBackground] = useState("");
     const [traitsText, setTraitsText] = useState("");
     const [motivationsText, setMotivationsText] = useState("");
     const [fearsText, setFearsText] = useState("");
+    const [relationshipsText, setRelationshipsText] = useState("");
     const [nVariations, setNVariations] = useState(1);
 
-    // ── Output ──
     const [activeTab, setActiveTab] = useState("profile");
     const [latest, setLatest] = useState(null);
     const [generating, setGenerating] = useState(false);
@@ -80,25 +118,31 @@ export default function App() {
     const motivations = useMemo(() => linesToArray(motivationsText), [motivationsText]);
     const fears = useMemo(() => linesToArray(fearsText), [fearsText]);
 
+    // Parse relationships from "Name: role" format
+    const relationships = useMemo(() => {
+        const obj = {};
+        linesToArray(relationshipsText).forEach((line) => {
+            const [name, ...rest] = line.split(":");
+            if (name && rest.length) obj[name.trim()] = rest.join(":").trim();
+        });
+        return obj;
+    }, [relationshipsText]);
+
     const activeLocation = locations.find((l) => l.id === activeLocationId) || null;
 
-    // ── Load character into form ──
     function selectChar(c) {
         setSelectedChar(c.id);
         setCharName(c.name);
         setRoleInStory(c.role);
     }
 
-    // ── Map: add location ──
     function addLocation() {
         if (!newLocName.trim()) return;
         const id = crypto.randomUUID();
         const newLoc = { id, name: newLocName.trim(), description: newLocDesc.trim(), tags: [] };
         const updated = [...locations, newLoc];
         setLocations(updated);
-        // Auto-position in a circle
-        const idx = updated.length - 1;
-        const pos = getNodePosition(idx, updated.length);
+        const pos = getNodePosition(updated.length - 1, updated.length);
         setPositions((prev) => ({ ...prev, [id]: pos }));
         setNewLocName("");
         setNewLocDesc("");
@@ -113,10 +157,9 @@ export default function App() {
     }
 
     function assignCharToLocation(charId, locId) {
-        setCharacters((prev) => prev.map((c) => c.id === charId ? { ...c, locationId: locId } : c));
+        setCharacters((prev) => prev.map((c) => c.id === charId ? { ...c, locationId: locId || null } : c));
     }
 
-    // ── Map drag ──
     function onMouseDown(e, locId) {
         e.preventDefault();
         setDragging(locId);
@@ -132,19 +175,41 @@ export default function App() {
 
     function onMouseUp() { setDragging(null); }
 
-    // ── Generate ──
+    // Export character + latest output as JSON download
+    function exportJSON() {
+        if (!latest) return;
+        const data = {
+            scenario: { title, genre, setting, theme, constraints },
+            character: { name: charName, role: roleInStory, background, personality_traits, motivations, fears, relationships },
+            activeLocation: activeLocation ? { name: activeLocation.name, description: activeLocation.description } : null,
+            generation: {
+                profile: latest.profile,
+                dialogue: latest.dialogue,
+                scene: latest.scene,
+                story_seed: latest.story_seed || null,
+                consistency_report: latest.consistency_report,
+            },
+            exported_at: new Date().toISOString(),
+        };
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `${charName || "character"}_${Date.now()}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+    }
+
     async function generate() {
         setGenerating(true);
         setStatusMsg("Generating…");
         setLatest(null);
 
-        // Build location context to inject into the prompt
         const locationContext = activeLocation
             ? `\nActive Location: ${activeLocation.name}${activeLocation.description ? ` — ${activeLocation.description}` : ""}`
             : "";
 
-        // Characters at the active location
-        const charsAtLocation = characters.filter((c) => c.locationId === activeLocationId);
+        const charsAtLocation = characters.filter((c) => c.locationId === activeLocationId && c.id !== selectedChar);
         const charContext = charsAtLocation.length > 0
             ? `\nOther characters present: ${charsAtLocation.map((c) => `${c.name} (${c.role})`).join(", ")}`
             : "";
@@ -170,7 +235,7 @@ export default function App() {
                         personality_traits,
                         motivations,
                         fears,
-                        relationships: {},
+                        relationships,
                         voice_notes: "",
                     },
                 }),
@@ -185,6 +250,7 @@ export default function App() {
             const first = (data.results || [])[0];
             setLatest(first || null);
             setStatusMsg(first ? "Generation complete." : "No results returned.");
+            setActiveTab("profile");
         } catch (e) {
             setStatusMsg(`Error: ${String(e)}`);
         } finally {
@@ -192,9 +258,11 @@ export default function App() {
         }
     }
 
+    const TABS = ["profile", "dialogue", "scene", "story seed", "consistency"];
+
     return (
         <div className="app">
-            {/* ── Left Sidebar ── */}
+            {/* Sidebar */}
             <aside className="sidebar">
                 <div className="brand">
                     <div className="logo" />
@@ -223,14 +291,13 @@ export default function App() {
                     })}
                 </div>
 
-                {/* Assign selected character to location */}
                 {selectedChar && locations.length > 0 && (
                     <div className="assignBox">
                         <div className="sectionTitle" style={{ marginTop: 0 }}>Assign to location</div>
                         <select
                             className="selectInput"
                             value={characters.find((c) => c.id === selectedChar)?.locationId || ""}
-                            onChange={(e) => assignCharToLocation(selectedChar, e.target.value || null)}
+                            onChange={(e) => assignCharToLocation(selectedChar, e.target.value)}
                         >
                             <option value="">— None —</option>
                             {locations.map((l) => (
@@ -245,9 +312,8 @@ export default function App() {
                 </div>
             </aside>
 
-            {/* ── Centre: Map + Output ── */}
+            {/* Centre */}
             <main className="main">
-                {/* Map panel */}
                 <div className="mapPanel">
                     <div className="mapHeader">
                         <span className="mapTitle">🗺 Narrative Map — {title || "Untitled Scenario"}</span>
@@ -258,49 +324,27 @@ export default function App() {
 
                     {showAddLoc && (
                         <div className="addLocForm">
-                            <input
-                                className="input small"
-                                placeholder="Location name…"
-                                value={newLocName}
-                                onChange={(e) => setNewLocName(e.target.value)}
-                            />
-                            <input
-                                className="input small"
-                                placeholder="Short description (optional)…"
-                                value={newLocDesc}
-                                onChange={(e) => setNewLocDesc(e.target.value)}
-                            />
+                            <input className="input small" placeholder="Location name…" value={newLocName} onChange={(e) => setNewLocName(e.target.value)} />
+                            <input className="input small" placeholder="Short description (optional)…" value={newLocDesc} onChange={(e) => setNewLocDesc(e.target.value)} />
                             <button className="btn small" type="button" onClick={addLocation}>Add</button>
                             <button className="btn ghost small" type="button" onClick={() => setShowAddLoc(false)}>Cancel</button>
                         </div>
                     )}
 
-                    {/* Map canvas */}
-                    <div
-                        className="mapCanvas"
-                        ref={mapRef}
-                        onMouseMove={onMouseMove}
-                        onMouseUp={onMouseUp}
-                        onMouseLeave={onMouseUp}
-                    >
+                    <div className="mapCanvas" ref={mapRef} onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp}>
                         {locations.length === 0 && (
                             <div className="mapEmpty">Add locations to build your narrative world map.</div>
                         )}
-
-                        {/* Draw connection lines between locations */}
                         <svg className="mapSvg">
                             {locations.map((loc, i) =>
-                                locations.slice(i + 1).map((loc2) => {
+                                locations.slice(i + 1).map((loc2, j) => {
                                     const p1 = positions[loc.id] || getNodePosition(i, locations.length);
-                                    const p2 = positions[loc2.id] || getNodePosition(i + 1, locations.length);
+                                    const p2 = positions[loc2.id] || getNodePosition(i + j + 1, locations.length);
                                     return (
-                                        <line
-                                            key={`${loc.id}-${loc2.id}`}
-                                            x1={`${p1.x}%`} y1={`${p1.y}%`}
-                                            x2={`${p2.x}%`} y2={`${p2.y}%`}
-                                            stroke="rgba(124,92,255,0.15)"
-                                            strokeWidth="1"
-                                            strokeDasharray="4 4"
+                                        <line key={`${loc.id}-${loc2.id}`}
+                                              x1={`${p1.x}%`} y1={`${p1.y}%`}
+                                              x2={`${p2.x}%`} y2={`${p2.y}%`}
+                                              stroke="rgba(124,92,255,0.15)" strokeWidth="1" strokeDasharray="4 4"
                                         />
                                     );
                                 })
@@ -311,7 +355,6 @@ export default function App() {
                             const pos = positions[loc.id] || getNodePosition(i, locations.length);
                             const isActive = loc.id === activeLocationId;
                             const charsHere = characters.filter((c) => c.locationId === loc.id);
-
                             return (
                                 <div
                                     key={loc.id}
@@ -324,16 +367,10 @@ export default function App() {
                                     <div className="nodeLabel">{loc.name}</div>
                                     {charsHere.length > 0 && (
                                         <div className="nodeChars">
-                                            {charsHere.map((c) => (
-                                                <span key={c.id} className="charTag">{c.name.split(" ")[0]}</span>
-                                            ))}
+                                            {charsHere.map((c) => <span key={c.id} className="charTag">{c.name.split(" ")[0]}</span>)}
                                         </div>
                                     )}
-                                    <button
-                                        className="nodeRemove"
-                                        type="button"
-                                        onClick={(e) => { e.stopPropagation(); removeLocation(loc.id); }}
-                                    >×</button>
+                                    <button className="nodeRemove" type="button" onClick={(e) => { e.stopPropagation(); removeLocation(loc.id); }}>×</button>
                                 </div>
                             );
                         })}
@@ -341,31 +378,33 @@ export default function App() {
 
                     {activeLocation && (
                         <div className="activeLocBar">
-                            <span>📍 Active location: <strong>{activeLocation.name}</strong></span>
+                            <span>📍 Active: <strong>{activeLocation.name}</strong></span>
                             {activeLocation.description && <span className="muted"> — {activeLocation.description}</span>}
-                            <span className="muted" style={{ marginLeft: "auto", fontSize: 11 }}>This location will be injected into generation</span>
+                            <span className="muted" style={{ marginLeft: "auto", fontSize: 11 }}>Injected into generation</span>
                         </div>
                     )}
                 </div>
 
-                {/* Output panel */}
+                {/* Output */}
                 <div className="outputPanel">
                     <div className="outputHeader">
                         <div className="tabs">
-                            {["profile", "dialogue", "scene", "consistency"].map((t) => (
-                                <button
-                                    key={t}
-                                    type="button"
-                                    className={`tab ${activeTab === t ? "active" : ""}`}
-                                    onClick={() => setActiveTab(t)}
-                                >
+                            {TABS.map((t) => (
+                                <button key={t} type="button" className={`tab ${activeTab === t ? "active" : ""}`} onClick={() => setActiveTab(t)}>
                                     {t}
                                 </button>
                             ))}
                         </div>
-                        <button className="btn" type="button" onClick={generate} disabled={generating}>
-                            {generating ? "Generating…" : "Generate"}
-                        </button>
+                        <div style={{ display: "flex", gap: 8 }}>
+                            {latest && (
+                                <button className="btn ghost small" type="button" onClick={exportJSON}>
+                                    ↓ Export JSON
+                                </button>
+                            )}
+                            <button className="btn" type="button" onClick={generate} disabled={generating}>
+                                {generating ? "Generating…" : "Generate"}
+                            </button>
+                        </div>
                     </div>
 
                     {statusMsg && <div className="statusMsg">{statusMsg}</div>}
@@ -375,12 +414,13 @@ export default function App() {
                         {latest && activeTab === "profile" && <div className="outText">{latest.profile}</div>}
                         {latest && activeTab === "dialogue" && <div className="outText">{latest.dialogue}</div>}
                         {latest && activeTab === "scene" && <div className="outText">{latest.scene}</div>}
-                        {latest && activeTab === "consistency" && <JsonPretty value={latest.consistency_report} />}
+                        {latest && activeTab === "story seed" && <div className="outText">{latest.story_seed || "No story seed generated."}</div>}
+                        {latest && activeTab === "consistency" && <ConsistencyCard report={latest.consistency_report} />}
                     </div>
                 </div>
             </main>
 
-            {/* ── Right Panel: Scenario + Character form ── */}
+            {/* Right panel */}
             <aside className="panel">
                 <div className="panelTitle">Scenario</div>
                 <div className="form">
@@ -397,12 +437,12 @@ export default function App() {
                         <input value={setting} onChange={(e) => setSetting(e.target.value)} placeholder="e.g. A city where memories can be bought and sold" />
                     </Field>
 
-                    <Field label="Theme (optional)" tooltip="The central idea your story explores — e.g. identity, sacrifice.">
+                    <Field label="Theme (optional)" tooltip="The central idea your story explores.">
                         <input value={theme} onChange={(e) => setTheme(e.target.value)} placeholder="e.g. Identity and sacrifice" />
                     </Field>
 
-                    <Field label="Constraints (one per line)" tooltip="Rules of your world the AI must not break. One per line.">
-                        <textarea rows={3} value={constraintsText} onChange={(e) => setConstraintsText(e.target.value)} placeholder={"Magic has a cost\nMemories cannot be fully restored"} />
+                    <Field label="Constraints (one per line)" tooltip="World rules the AI must not break. One per line.">
+                        <textarea rows={2} value={constraintsText} onChange={(e) => setConstraintsText(e.target.value)} placeholder={"Magic has a cost\nMemories cannot be fully restored"} />
                     </Field>
 
                     <div className="divider" />
@@ -412,12 +452,12 @@ export default function App() {
                         <Field label="Name" tooltip="Your character's name.">
                             <input value={charName} onChange={(e) => setCharName(e.target.value)} placeholder="e.g. Iris Vale" />
                         </Field>
-                        <Field label="Role" tooltip="Their narrative role — Protagonist, Antagonist, Mentor, etc.">
+                        <Field label="Role" tooltip="Protagonist, Antagonist, Mentor, etc.">
                             <input value={roleInStory} onChange={(e) => setRoleInStory(e.target.value)} placeholder="e.g. Protagonist" />
                         </Field>
                     </div>
 
-                    <Field label="Background (optional)" tooltip="A brief history — their past and what shaped them.">
+                    <Field label="Background (optional)" tooltip="Their past and what shaped them.">
                         <textarea rows={2} value={background} onChange={(e) => setBackground(e.target.value)} placeholder="e.g. A former social worker turned memory-broker." />
                     </Field>
 
@@ -432,6 +472,10 @@ export default function App() {
 
                     <Field label="Fears" tooltip="What would break them? One per line.">
                         <textarea rows={2} value={fearsText} onChange={(e) => setFearsText(e.target.value)} placeholder="e.g. losing her identity" />
+                    </Field>
+
+                    <Field label="Relationships (Name: role, one per line)" tooltip="Other characters this person knows. Format: Lucan: rival">
+                        <textarea rows={2} value={relationshipsText} onChange={(e) => setRelationshipsText(e.target.value)} placeholder={"Lucan Mercer: rival\nMara Quinn: mentor figure"} />
                     </Field>
 
                     <Field label="Variations" tooltip="Generate multiple versions to compare. 1–5.">

@@ -16,14 +16,12 @@ class NarrativeContext:
 
     def validate(self):
         errors = []
-
         if not self.title.strip():
             errors.append("NarrativeContext.title is required.")
         if not self.genre.strip():
             errors.append("NarrativeContext.genre is required.")
         if not self.setting.strip():
             errors.append("NarrativeContext.setting is required.")
-
         return errors
 
 
@@ -39,27 +37,22 @@ class CharacterProfile:
         self.name = name
         self.role_in_story = role_in_story
         self.background = background
-
         self.personality_traits = personality_traits if personality_traits is not None else []
         self.motivations = motivations if motivations is not None else []
         self.fears = fears if fears is not None else []
         self.relationships = relationships if relationships is not None else {}
-
         self.voice_notes = voice_notes
 
     def validate(self):
         errors = []
-
         if not self.name.strip():
             errors.append("CharacterProfile.name is required.")
         if not self.role_in_story.strip():
             errors.append("CharacterProfile.role_in_story is required.")
-
         if len(self.personality_traits) == 0:
             errors.append("CharacterProfile.personality_traits should include at least one trait.")
         if len(self.motivations) == 0:
             errors.append("CharacterProfile.motivations should include at least one motivation.")
-
         return errors
 
 
@@ -67,6 +60,8 @@ class GenerationRequest:
     """
     Combines narrative context, character definition, and generation settings.
     """
+    VALID_OUTPUT_TYPES = ["profile", "dialogue", "scene", "story_seed"]
+
     def __init__(self, narrative, character, output_type, n_variations=1):
         self.narrative = narrative
         self.character = character
@@ -75,19 +70,15 @@ class GenerationRequest:
 
     def validate(self):
         errors = []
-
         errors.extend(self.narrative.validate())
         errors.extend(self.character.validate())
 
-        if self.output_type not in ["profile", "dialogue", "scene"]:
+        if self.output_type not in self.VALID_OUTPUT_TYPES:
             errors.append(
-                "GenerationRequest.output_type must be one of: profile, dialogue, scene."
+                f"GenerationRequest.output_type must be one of: {', '.join(self.VALID_OUTPUT_TYPES)}."
             )
-
         if self.n_variations < 1 or self.n_variations > 5:
-            errors.append(
-                "GenerationRequest.n_variations must be between 1 and 5."
-            )
+            errors.append("GenerationRequest.n_variations must be between 1 and 5.")
 
         return errors
 
